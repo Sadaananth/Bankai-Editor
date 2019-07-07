@@ -7,6 +7,9 @@
 #include <sys/ioctl.h>
 #include <string.h>
 
+#define _GNU_SOURCE
+
+//#define PRINT_RAW
 #define BANKAI_VERSION	"0.0.1"
 #define CTRL_KEY(key)	( key & 0x1F )
 #define ABUF_INIT 		{ NULL, 0}
@@ -18,12 +21,22 @@ typedef enum
 	MOVE_LEFT,
 	MOVE_RIGHT,
 	PAGE_UP,
-	PAGE_DOWN
+	PAGE_DOWN,
+	HOME_KEY,
+	END_KEY,
+	DELETE_KEY
 }arrow_key_t;
 
-typedef struct{
-  char *b;
-  int len;
+typedef struct 
+{
+	int size;
+	char *chars;
+}erow_t;
+
+typedef struct
+{
+	char *b;
+	int len;
 }abuf_t;
   
 typedef struct 
@@ -32,6 +45,8 @@ typedef struct
 	unsigned int current_y;
 	unsigned int term_rows;
 	unsigned int term_cols;
+	unsigned int numrows;
+	erow_t *row;
 	struct termios orig_term;
 }editorConfig_t;
 
@@ -123,6 +138,12 @@ void editorMoveCursor(int key)
 				++editorConfig.current_y;
 			}
 			break;
+		case HOME_KEY:
+			editorConfig.current_x = 0;
+			break;
+		case END_KEY:
+			editorConfig.current_x = editorConfig.term_cols - 1;
+			break;
 		default:
 			break;
 	}
@@ -185,31 +206,44 @@ void editorDrawRows(abuf_t* ab)
 	int y;
 	char welcome[80];
 	unsigned int welcome_len;
+	unsigned int content_len;
 	unsigned int padding_len;
 	for( y = 0; y < editorConfig.term_rows; y++) 
 	{
-		if( y == ( editorConfig.term_rows / 3 ) )
+		if( y >= editorConfig.numrows )
 		{
-			welcome_len = snprintf( &welcome[0], sizeof(welcome), "Bankai Version - %s", BANKAI_VERSION);
-			
-			if( welcome_len > editorConfig.term_cols )
+			if( ( editorConfig.numrows == 0 ) && (y == ( editorConfig.term_rows / 3 ) ) )
 			{
-				welcome_len = editorConfig.term_cols;
-			}
-			padding_len = ( editorConfig.term_cols - welcome_len) / 2;
-			
-			abAppend( ab, "~", 1 );
-			--padding_len;
-			while( padding_len )
-			{
-				abAppend( ab, " ", 1);
+				welcome_len = snprintf( &welcome[0], sizeof(welcome), "Bankai Version - %s", BANKAI_VERSION);
+				
+				if( welcome_len > editorConfig.term_cols )
+				{
+					welcome_len = editorConfig.term_cols;
+				}
+				padding_len = ( editorConfig.term_cols - welcome_len) / 2;
+				
+				abAppend( ab, "~", 1 );
 				--padding_len;
+				while( padding_len )
+				{
+					abAppend( ab, " ", 1);
+					--padding_len;
+				}
+				abAppend(ab, &welcome[0], welcome_len );
 			}
-			abAppend(ab, &welcome[0], welcome_len );
+			else
+			{
+				abAppend( ab, "~", 1);
+			}
 		}
 		else
 		{
-			abAppend( ab, "~", 1);
+			content_len = editorConfig.row[y].size;
+			if( editorConfig.row[y].size > editorConfig.term_cols )
+			{
+				content_len = editorConfig.term_cols;
+			}
+			abAppend( ab, editorConfig.row[y].chars, content_len);
 		}
 		abAppend(ab, "\x1b[K", 3); /* clear single line */
 		if( y < ( editorConfig.term_rows - 1 ) )
@@ -223,10 +257,13 @@ void editorRefreshScreen()
 {
 	abuf_t ab = ABUF_INIT;
 	char local_buff[32];
+	
 	abAppend( &ab, "\x1b[?25l", 6); /* Hides cursor */
 	//abAppend( &ab, "\x1b[2J", 4); /* clear entire screen */
 	abAppend( &ab, "\x1b[H", 3); /* move cursor to top left */
+	
 	editorDrawRows(&ab);
+	
 	//abAppend( &ab, "\x1b[H", 3); /* move cursor to top left */
 	snprintf(local_buff, sizeof(local_buff), "\x1b[%d;%dH", editorConfig.current_y + 1, editorConfig.current_x + 1);
 	abAppend(&ab, local_buff, strlen(local_buff));		
@@ -271,11 +308,26 @@ int ReadKeyInput()
 									{
 										switch( sequence[1]) 
 										{
+											case '1':
+												retval = HOME_KEY;
+												break;
+											case '3':
+												retval = DELETE_KEY;
+												break;
+											case '4': 
+												retval = END_KEY;
+												break;
 											case '5': 
 												retval = PAGE_UP;
 												break;
 											case '6': 
 												retval = PAGE_DOWN;
+												break;
+											case '7':
+												retval = HOME_KEY;
+												break;
+											case '8': 
+												retval = END_KEY;												
 												break;
 											default:
 												break;
@@ -303,11 +355,35 @@ int ReadKeyInput()
 									case 'D': 
 										retval = MOVE_LEFT;
 										break;
+									case 'H': 
+										retval = HOME_KEY;
+										break;
+									case 'F': 
+										retval = END_KEY;
+										break;
 									default:
 										break;
 								}	
 							}
 						}
+						else if( sequence[0] == 'O' )
+						{
+							switch( sequence[1] )
+							{
+								case 'H':
+									retval = HOME_KEY;
+									break;
+								case 'F':
+									retval = END_KEY;
+									break;
+								default:
+									break;
+							}
+						}
+						else
+						{
+							
+						}						
 					}
 					else
 					{
@@ -315,19 +391,49 @@ int ReadKeyInput()
 					}				
 				}
 			}
-			if( iscntrl( retval ) )
+			/*if( iscntrl( retval ) )
 			{
-				printf("%d",retval);
+				printf("%d %d(%c) %d(%c)",retval,sequence[0],sequence[0],sequence[1],sequence[1]);
 			}
 			else
 			{
 				printf("%d ('%c') ", retval, retval);
 			}
-			fflush(stdout);
+			fflush(stdout);*/
 			break;
 		}
 	}
 	return retval;	
+}
+
+void PrintRawInput()
+{
+	char input;
+	int retval = -1;
+	while( 1 )
+	{
+		retval = read( STDIN_FILENO, &input, 1 );
+		if( ( retval == -1 ) && ( errno != EAGAIN ) )
+		{
+			break;
+		}
+		else if( retval >= 1 )
+		{
+			if( iscntrl( input ) )
+			{
+				printf("%d ",input);
+			}
+			else
+			{
+				printf("%c (%d)",input,input);
+			}
+			if( input == 'q' )
+			{
+				die("none");
+			}
+			fflush(stdout);
+		}	
+	}
 }
 
 void KeyPresshandler()
@@ -346,15 +452,90 @@ void KeyPresshandler()
 		case MOVE_UP:
 			editorMoveCursor( keyevent);
 			break;
+		case PAGE_UP:
+		case PAGE_DOWN:
+			{
+				int times = editorConfig.term_rows;
+				while( times-- )
+				{
+					editorMoveCursor(keyevent == PAGE_UP ? MOVE_UP : MOVE_DOWN);
+				}
+			} 
+			break;
+		case HOME_KEY:
+				editorMoveCursor(HOME_KEY);			
+				break;
+		case END_KEY:
+				editorMoveCursor(END_KEY);			
+				break;		
 		default:
 			break;
 	}
+}
+
+void editorAppendRow(char *line, size_t linelen) 
+{
+	int index;
+	
+	editorConfig.row = realloc( editorConfig.row, sizeof( erow_t ) * ( editorConfig.numrows + 1 ) );
+	
+	if( editorConfig.row != NULL )
+	{
+		index = editorConfig.numrows;
+		editorConfig.row[index].size = linelen;
+		editorConfig.row[index].chars = malloc(linelen + 1);
+		memcpy(editorConfig.row[index].chars, line, linelen);
+		editorConfig.row[index].chars[linelen] = '\0';
+		editorConfig.numrows++;
+	}
+	else
+	{
+		die("editorAppendRow");
+	}
+}
+
+void editorOpen(char* arg) 
+{
+	FILE *fp;
+	char *line = NULL;
+	size_t linecap = 0;
+	ssize_t linelen;
+	
+	fp = fopen(arg, "r");
+	if( !fp ) 
+	{
+		die("fopen");
+	}
+	
+	while( 1 )
+	{
+		linelen = getline(&line, &linecap, fp);
+		
+		if( linelen != -1) 
+		{
+			while( ( linelen > 0 ) &&
+				   ( ( line[linelen - 1] == '\n' ) || ( line[linelen - 1] == '\r' ) ) )
+			{						   
+				linelen--;
+			}
+			editorAppendRow(line, linelen);
+		}
+		else
+		{
+			break;
+		}
+	}
+	
+	free(line);
+	fclose(fp);
 }
 
 void initEditor() 
 {
 	editorConfig.current_x = 0;
 	editorConfig.current_y = 0;
+	editorConfig.numrows = 0;
+	editorConfig.row = NULL;
 	
 	if(getTerminalSize(&editorConfig.term_rows, &editorConfig.term_cols) == -1) 
 	{
@@ -362,14 +543,24 @@ void initEditor()
 	}
 }
 
-int main()
+int main(int argc, char** argv)
 {
 	enableRawMode();
 	initEditor();
+	
+	if( argc > 1 )
+	{
+		editorOpen(argv[1]);
+	}
+	
 	while( 1 )
 	{
+#ifndef PRINT_RAW
 		editorRefreshScreen();
 		KeyPresshandler();
+#else		
+		PrintRawInput();
+#endif		
 	}
 	return 0;
 }
@@ -389,6 +580,11 @@ int main()
  * 				- use ioctl to get window size
  * 				- move cursor to bottom right corner and get cursor position using VT100 commands
  * Move Some writes in to common buffer for single write
+ * Arrow Key functionality
+ * Page Up/Down functionality
+ * Home/End key functionality
+ * 
+ * Create Row array to store contents of file
  * 
  * WORKING FLOW
  * -----------------
@@ -401,5 +597,6 @@ int main()
  * 		Refresh Screen
  * 			- Show tilde in all rows of terminal
  * 		Wait for any data from stdin
- * 		Exit on CTRL_Q / Loop again of other keys
+ * 			- Process key for Special Key
+ * 			- Exit on CTRL_Q / Loop again of other keys
  * */ 
