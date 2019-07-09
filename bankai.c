@@ -48,6 +48,8 @@ typedef struct
 	unsigned int numrows;
 	erow_t *row;
 	struct termios orig_term;
+	unsigned int row_offset;
+	unsigned int col_offset;
 }editorConfig_t;
 
 editorConfig_t editorConfig;
@@ -112,6 +114,9 @@ void enableRawMode()
 
 void editorMoveCursor(int key) 
 {
+	erow_t * row = ( editorConfig.current_y >= editorConfig.numrows ) ? NULL : &editorConfig.row[editorConfig.current_y];
+	unsigned int rowlen;
+	
 	switch( key ) 
 	{
 		case MOVE_LEFT:
@@ -121,7 +126,7 @@ void editorMoveCursor(int key)
 			}
 			break;
 		case MOVE_RIGHT:
-			if( editorConfig.current_x < editorConfig.term_cols )
+			if( ( row != NULL ) && ( editorConfig.current_x < row->size ) ) 
 			{ 
 				++editorConfig.current_x;
 			}
@@ -133,7 +138,7 @@ void editorMoveCursor(int key)
 			}
 			break;
 		case MOVE_DOWN:
-			if( editorConfig.current_y < editorConfig.term_rows )
+			if( editorConfig.current_y < editorConfig.numrows )
 			{
 				++editorConfig.current_y;
 			}
@@ -147,6 +152,12 @@ void editorMoveCursor(int key)
 		default:
 			break;
 	}
+
+	rowlen = row ? row->size : 0;
+	if (E.cx > rowlen) 
+	{
+		E.cx = rowlen;
+	}	
 }
 
 int getCursorPosition(int *rows, int *cols) 
@@ -208,11 +219,16 @@ void editorDrawRows(abuf_t* ab)
 	unsigned int welcome_len;
 	unsigned int content_len;
 	unsigned int padding_len;
+	unsigned int file_row;
+	
 	for( y = 0; y < editorConfig.term_rows; y++) 
 	{
-		if( y >= editorConfig.numrows )
+		file_row = y + editorConfig.row_offset;
+		
+		if( file_row >= editorConfig.numrows )
 		{
-			if( ( editorConfig.numrows == 0 ) && (y == ( editorConfig.term_rows / 3 ) ) )
+			/** display version in middle */
+			if( ( editorConfig.numrows == 0 ) && ( y == ( editorConfig.term_rows / 3 ) ) )
 			{
 				welcome_len = snprintf( &welcome[0], sizeof(welcome), "Bankai Version - %s", BANKAI_VERSION);
 				
@@ -231,6 +247,7 @@ void editorDrawRows(abuf_t* ab)
 				}
 				abAppend(ab, &welcome[0], welcome_len );
 			}
+			/** Tilde(~) in remaining line */
 			else
 			{
 				abAppend( ab, "~", 1);
@@ -238,12 +255,15 @@ void editorDrawRows(abuf_t* ab)
 		}
 		else
 		{
-			content_len = editorConfig.row[y].size;
-			if( editorConfig.row[y].size > editorConfig.term_cols )
+			content_len = editorConfig.row[file_row].size;
+			if( editorConfig.row[file_row].size > editorConfig.term_cols )
 			{
 				content_len = editorConfig.term_cols;
 			}
-			abAppend( ab, editorConfig.row[y].chars, content_len);
+			if( content_len > editorConfig.col_offset )
+			{
+				abAppend( ab, &editorConfig.row[file_row].chars[editorConfig.col_offset], content_len - editorConfig.col_offset);
+			}
 		}
 		abAppend(ab, "\x1b[K", 3); /* clear single line */
 		if( y < ( editorConfig.term_rows - 1 ) )
@@ -253,10 +273,33 @@ void editorDrawRows(abuf_t* ab)
 	}
 }
 
+void editorScroll() 
+{
+	if( editorConfig.current_y < editorConfig.row_offset) 
+	{
+		editorConfig.row_offset = editorConfig.current_y;
+	}
+	if( editorConfig.current_y >= ( editorConfig.row_offset + editorConfig.term_rows ) )
+	{
+		editorConfig.row_offset = editorConfig.current_y - editorConfig.term_rows + 1;
+	}
+	
+	if( editorConfig.current_x < editorConfig.col_offset) 
+	{
+		editorConfig.col_offset = editorConfig.current_x;
+	}
+	if( editorConfig.current_x >= editorConfig.col_offset + editorConfig.term_cols) 
+	{
+		editorConfig.col_offset = editorConfig.current_x - editorConfig.term_cols + 1;
+	}	
+}
+
 void editorRefreshScreen() 
 {
 	abuf_t ab = ABUF_INIT;
 	char local_buff[32];
+	
+	editorScroll();
 	
 	abAppend( &ab, "\x1b[?25l", 6); /* Hides cursor */
 	//abAppend( &ab, "\x1b[2J", 4); /* clear entire screen */
@@ -265,7 +308,7 @@ void editorRefreshScreen()
 	editorDrawRows(&ab);
 	
 	//abAppend( &ab, "\x1b[H", 3); /* move cursor to top left */
-	snprintf(local_buff, sizeof(local_buff), "\x1b[%d;%dH", editorConfig.current_y + 1, editorConfig.current_x + 1);
+	snprintf(local_buff, sizeof(local_buff), "\x1b[%d;%dH", ( editorConfig.current_y + 1 - editorConfig.row_offset ), ( editorConfig.current_x + 1 - editorConfig.col_offset ) );
 	abAppend(&ab, local_buff, strlen(local_buff));		
 	abAppend( &ab, "\x1b[?25h", 6); /* Show Cursor */
 	
@@ -536,6 +579,8 @@ void initEditor()
 	editorConfig.current_y = 0;
 	editorConfig.numrows = 0;
 	editorConfig.row = NULL;
+	editorConfig.row_offset = 0;
+	editorConfig.col_offset = 0;
 	
 	if(getTerminalSize(&editorConfig.term_rows, &editorConfig.term_cols) == -1) 
 	{
@@ -585,6 +630,7 @@ int main(int argc, char** argv)
  * Home/End key functionality
  * 
  * Create Row array to store contents of file
+ * Store Row Offset value to enable verticle scrolling
  * 
  * WORKING FLOW
  * -----------------
